@@ -5,12 +5,112 @@ using System.Threading.Tasks;
 
 namespace JapaneseCrossword
 {
+	internal enum Line
+	{
+		Row,
+		Column
+	}
+
+	internal class Update
+	{
+		public Line LineType { get; private set; }
+		public int Index { get; private set; }
+
+		public Update(bool row, int index)
+		{
+			LineType = row ? Line.Row : Line.Column;
+			Index = index;
+		}
+
+		public bool IsRow()
+		{
+			return LineType == Line.Row;
+		}
+
+		public override bool Equals(object obj)
+		{
+			if (obj.GetType() != GetType())
+				return false;
+			var other = (Update)obj;
+			return other.Index == Index && other.LineType == LineType;
+		}
+
+		public override int GetHashCode()
+		{
+			return LineType.GetHashCode() ^ Index.GetHashCode();
+		}
+	}
+
+	internal class ProbableValueLine
+	{
+		public bool[] CanBeBlack;
+		public bool[] CanBeWhite;
+		public int Length
+		{
+			get { return CanBeBlack.Length; }
+		}
+
+		public ProbableValueLine(int length)
+		{
+			CanBeBlack = Enumerable
+				.Range(0, length)
+				.Select(z => false)
+				.ToArray();
+			CanBeWhite = CanBeBlack.ToArray();
+		}
+
+		public void WritePrefix(ProbableValueLine prefix, int length)
+		{
+			var minimum = Math.Min(prefix.Length, Math.Min(Length, length));
+			for (var i = 0; i < minimum; i++)
+			{
+				CanBeBlack[i] = prefix.CanBeBlack[i];
+				CanBeWhite[i] = prefix.CanBeWhite[i];
+			}
+		}
+
+		public void WritePrefix(ProbableValueLine prefix)
+		{
+			WritePrefix(prefix, prefix.Length);
+		}
+
+		public void DisjunctWithPrefix(ProbableValueLine prefix, int length)
+		{
+			var minimum = Math.Min(prefix.Length, Math.Min(Length, length));
+			for (var i = 0; i < minimum; i++)
+			{
+				CanBeBlack[i] = (CanBeBlack[i] || prefix.CanBeBlack[i]);
+				CanBeWhite[i] = (CanBeWhite[i] || prefix.CanBeWhite[i]);
+			}
+		}
+
+		public void DisjunctWithPrefix(ProbableValueLine prefix)
+		{
+			DisjunctWithPrefix(prefix, prefix.Length);
+		}
+
+		public bool IsBlack(int index)
+		{
+			return CanBeBlack[index] && (!CanBeWhite[index]);
+		}
+
+		public bool IsWhite(int index)
+		{
+			return CanBeWhite[index] && (!CanBeBlack[index]);
+		}
+
+		public bool IsNone(int index)
+		{
+			return !(CanBeBlack[index] || CanBeWhite[index]);
+		}
+	}
+
 	public class CrosswordMath
 	{
 
 		private Crossword _crossword;
 		private Cell[,] _matrix;
-		private List<Tuple<bool, int>> _toUpdate;
+		private HashSet<Update> _toUpdate;
 		private object _locker;
 		private bool _incorrectCrossword;
 
@@ -22,10 +122,12 @@ namespace JapaneseCrossword
 			for (var i = 0; i < _matrix.GetLength(0); i++)
 				for (var j = 0; j < _matrix.GetLength(1); j++)
 					_matrix[i, j] = new Cell();
-			_toUpdate = Enumerable
+			_toUpdate = new HashSet<Update>(Enumerable
 				.Range(0, crossword.Rows.Count)
-				.Select(z => Tuple.Create(true, z))
-				.ToList();
+				.Select(z => new Update(true, z))
+				.Concat(Enumerable
+					.Range(0, crossword.Columns.Count)
+					.Select(z => new Update(false, z))));
 			_locker = new object();
 		}
 
@@ -34,7 +136,7 @@ namespace JapaneseCrossword
 			while (true)
 			{
 				var toUpdateBuffer = _toUpdate.ToArray();
-				_toUpdate = new List<Tuple<bool, int>>();
+				_toUpdate = new HashSet<Update>();
 				var tasks = new List<Task>();
 				foreach (var update in toUpdateBuffer)
 				{
@@ -54,105 +156,124 @@ namespace JapaneseCrossword
 			return new SolutionResult(_matrix, status);
 		}
 
-		private Cell GetCell(Tuple<bool, int> update, int index)
+		private Cell GetCell(Update update, int index)
 		{
-			if (update.Item1)
-				return _matrix[update.Item2, index];
-			return _matrix[index, update.Item2];
+			if (update.LineType == Line.Row)
+				return _matrix[update.Index, index];
+			return _matrix[index, update.Index];
 		}
 
-		private List<int> GetCrosswordLine(Tuple<bool, int> update)
+		private List<int> GetCrosswordLine(Update update)
 		{
-			if (update.Item1)
-				return _crossword.Rows[update.Item2];
-			return _crossword.Columns[update.Item2];
+			if (update.LineType == Line.Row)
+				return _crossword.Rows[update.Index];
+			return _crossword.Columns[update.Index];
 		}
 
-		private void CheckAllLineSolutions(Tuple<bool, int> update, bool[] canBeBlack, bool[] canBeWhite)
+		private void DynamicallyCheckAllLineSolutions(Update update, ProbableValueLine valueLine)
 		{
-			var length = _matrix.GetLength(0);
-			if (update.Item1)
-				length = _matrix.GetLength(1);
-			var solutionBase = Enumerable.Range(0, length)
-				.Select(z => false)
-				.ToArray();
-			foreach (var solution in GetAllLineSolutions(update, solutionBase, 0, 0))
-			{
-				for (var i = 0; i < length; i++)
+			var length = valueLine.Length;
+			var crosswordLine = GetCrosswordLine(update);
+			var previousSolutions = GetDinamicallyPreviousSolutions(update, valueLine.Length);
+			for (var i = 0; i <= length; i++)
+				if (previousSolutions[i].ContainsKey(crosswordLine.Count))
 				{
-					canBeBlack[i] = (canBeBlack[i] || solution[i]);
-					canBeWhite[i] = (canBeWhite[i] || (!solution[i]));
+					var valid = true;
+					for (var j = i; j < length; j++)
+						if (j >= 0 && GetCell(update, j).State == State.Black)
+							valid = false;
+					if (!valid)
+						continue;
+					var previousSolution = previousSolutions[i][crosswordLine.Count];
+					valueLine.DisjunctWithPrefix(previousSolution);
+					for (var j = previousSolution.Length; j < length; j++)
+						valueLine.CanBeWhite[j] = true;
 				}
-			}
 		}
 
-		private IEnumerable<bool[]> GetAllLineSolutions(Tuple<bool, int> update, 
-			bool[] solutionBase, int lineStart, int lineTaskStart)
+		private List<Dictionary<int, ProbableValueLine>> GetDinamicallyPreviousSolutions(Update update, int maxLength)
+		{
+			var previousSolutions = new List<Dictionary<int, ProbableValueLine>>();
+			for (var i = 0; i <= maxLength; i++)
+				AddSolutionsWithLength(update, previousSolutions, i);
+			return previousSolutions;
+		}
+
+		private void AddSolutionsWithLength(Update update, List<Dictionary<int, ProbableValueLine>> previousSolutions,
+			int length)
+		{
+			previousSolutions.Add(new Dictionary<int, ProbableValueLine>());
+			if (length == 0)
+				previousSolutions[0][0] = new ProbableValueLine(0);
+			for (var j = 0; j < length; j++)
+				AddSolutionsWithPrefix(update, previousSolutions, length, j);
+		}
+
+		private void AddSolutionsWithPrefix(Update update, List<Dictionary<int, ProbableValueLine>> previousSolutions,
+			int length, int prefixSolutionLength)
 		{
 			var crosswordLine = GetCrosswordLine(update);
-			if (lineTaskStart == crosswordLine.Count) //MANAGE
+			foreach (var key in previousSolutions[prefixSolutionLength].Keys.ToArray())
 			{
-				var valid = true;
-				for (var i = lineStart - 1; i < solutionBase.Length; i++)
-					if (GetCell(update, i).State == State.Black)
-						valid = false;
-				if (valid)
-					yield return solutionBase;
-			}
-			else
-			{
-				var minTaskLength = crosswordLine.Skip(lineTaskStart).Sum() + crosswordLine.Count - lineTaskStart - 1;
-				for (var i = lineStart; i <= solutionBase.Length - minTaskLength; i++)
+				if (key < crosswordLine.Count)
 				{
-					if (i != 0 && GetCell(update, i - 1).State == State.Black)
-						break;
-					var valid = true;
-					for (var j = i; j < i + crosswordLine[lineTaskStart]; j++)
-						if (GetCell(update, j).State == State.White)
-						{
-							valid = false;
-							break;
-						}
+					var elementLength = crosswordLine[key];
+					if ((prefixSolutionLength == 0 && length < elementLength) ||
+							(prefixSolutionLength > 0 && prefixSolutionLength > length - elementLength - 1))
+						continue;
+					if (NewSolutionIsValid(update, length, prefixSolutionLength, elementLength))
+					{
+						var newSolution = new ProbableValueLine(length);
+						newSolution.WritePrefix(previousSolutions[prefixSolutionLength][key], prefixSolutionLength);
+						for (var k = prefixSolutionLength; k < length - elementLength; k++)
+							newSolution.CanBeWhite[k] = true;
+						for (var k = length - elementLength; k < length; k++)
+							newSolution.CanBeBlack[k] = true;
+						if (previousSolutions[length].ContainsKey(key + 1))
+							previousSolutions[length][key + 1].DisjunctWithPrefix(newSolution, length);
 						else
-							solutionBase[j] = true;
-					if (valid)
-						foreach (var solution in
-							GetAllLineSolutions(update, solutionBase, i + crosswordLine[lineTaskStart] + 1, lineTaskStart + 1))
-							yield return solution;
-					for (var j = i; j < solutionBase.Length; j++)
-						solutionBase[j] = false;
+							previousSolutions[length][key + 1] = newSolution;
+					}
 				}
 			}
 		}
 
-		private void Update(Tuple<bool, int> update)
+		private bool NewSolutionIsValid(Update update, int length, int prefixSolutionLength,
+			int lastElementLength)
 		{
-			var length = _matrix.GetLength(0);
-			if (update.Item1)
-				length = _matrix.GetLength(1);
-			var canBeBlack = Enumerable.Range(0, length).Select(z => false).ToArray();
-			var canBeWhite = Enumerable.Range(0, length).Select(z => false).ToArray();
-			CheckAllLineSolutions(update, canBeBlack, canBeWhite);
+			for (var k = prefixSolutionLength; k < length - lastElementLength; k++)
+				if (GetCell(update, k).State == State.Black)
+					return false;
+			for (var k = length - lastElementLength; k < length; k++)
+				if (GetCell(update, k).State == State.White)
+					return false;
+			return true;
+		}
+
+		private void Update(Update update)
+		{
+			var length = _matrix.GetLength(update.LineType == Line.Row ? 1 : 0);
+			var valueLine = new ProbableValueLine(length);
+			DynamicallyCheckAllLineSolutions(update, valueLine);
 			for (var i = 0; i < length; i++)
 			{
 				var cell = GetCell(update, i);
 				var updated = false;
-				if (canBeBlack[i] && (!canBeWhite[i]) && cell.State == State.Unknown)
+				if (valueLine.IsBlack(i) && cell.State == State.Unknown)
 				{
 					cell.State = State.Black;
 					updated = true;
 				}
-				if ((!canBeBlack[i]) && canBeWhite[i] && cell.State == State.Unknown)
+				if (valueLine.IsWhite(i) && cell.State == State.Unknown)
 				{
 					cell.State = State.White;
 					updated = true;
 				}
 				if (updated)
 					lock (_locker)
-						_toUpdate.Add(Tuple.Create(!update.Item1, i));
-				if ((!canBeBlack[i]) && (!canBeWhite[i]))
-					lock (_locker)
-						_incorrectCrossword = true;
+						_toUpdate.Add(new Update(!update.IsRow(), i));
+				if (valueLine.IsNone(i))
+					_incorrectCrossword = true;
 			}
 		}
 	}

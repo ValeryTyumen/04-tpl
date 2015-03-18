@@ -76,6 +76,12 @@
     <Content Include="TestFiles\IncorrectCrossword.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="TestFiles\RowUnsolvable.solved.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="TestFiles\RowUnsolvable.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
     <Content Include="TestFiles\SampleInput.solved.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>

@@ -8,8 +8,18 @@ namespace JapaneseCrossword
 {
 	public class CrosswordSolver : ICrosswordSolver
 	{
-		public Crossword GetCrossword(string[] lines)
+		private bool ReadCrossword(string inputFilePath, out Crossword crossword)
 		{
+			string[] lines;
+			try
+			{
+				lines = File.ReadAllLines(inputFilePath);
+			}
+			catch
+			{
+				crossword = new Crossword(new List<List<int>>(), new List<List<int>>());
+				return false;
+			}
 			var rows = new List<List<int>>();
 			var columns = new List<List<int>>();
 
@@ -31,10 +41,11 @@ namespace JapaneseCrossword
 					columns.Add(values);
 
 			}
-			return new Crossword(rows, columns);
+			crossword = new Crossword(rows, columns);
+			return true;
 		}
 
-		private SolutionStatus WriteResult(string outputFilePath, Cell[,] matrix)
+		private bool WriteResult(string outputFilePath, Cell[,] matrix)
 		{
 			var lines = Enumerable
 				.Range(0, matrix.GetLength(0))
@@ -50,34 +61,27 @@ namespace JapaneseCrossword
 			}
 			catch
 			{
-				return SolutionStatus.BadOutputFilePath;
+				return false;
 			}
-			return SolutionStatus.Solved;
+			return true;
 		}
 
 		public SolutionStatus Solve(string inputFilePath, string outputFilePath)
 		{
 			var filenameRegex = new Regex(@"[\w\-. ]+$");
-	        if (! (filenameRegex.IsMatch(inputFilePath, 0) && File.Exists(inputFilePath)))
-					return SolutionStatus.BadInputFilePath;
-			if (! filenameRegex.IsMatch(outputFilePath, 0))
-		        return SolutionStatus.BadOutputFilePath;
-			string[] lines;
-			try
-			{
-				lines = File.ReadAllLines(inputFilePath);
-			}
-			catch
-			{
+			if (!(filenameRegex.IsMatch(inputFilePath, 0) && File.Exists(inputFilePath)))
 				return SolutionStatus.BadInputFilePath;
-			}
-			var crossword = GetCrossword(lines);
+			if (!filenameRegex.IsMatch(outputFilePath, 0))
+				return SolutionStatus.BadOutputFilePath;
+			string[] lines;
+			Crossword crossword;
+			if (! ReadCrossword(inputFilePath, out crossword))
+				return SolutionStatus.BadInputFilePath;
 			var crosswordMath = new CrosswordMath(crossword);
 			var result = crosswordMath.Solve();
-			var writeStatus = WriteResult(outputFilePath, result.Matrix);
-			if (writeStatus == SolutionStatus.BadOutputFilePath)
-				return writeStatus;
+			if (!WriteResult(outputFilePath, result.Matrix))
+				return SolutionStatus.BadOutputFilePath;
 			return result.Status;
-        }
-    }
+		}
+	}
 }
