@@ -13,6 +13,15 @@ namespace HashServer
 	{
 		static void Main(string[] args)
 		{
+			if (args.Length > 0)
+				try
+				{
+					port = int.Parse(args[0]);
+				}
+				catch(Exception e)
+				{
+					return;
+				}
 			XmlConfigurator.Configure();
 			try
 			{
@@ -75,7 +84,7 @@ namespace HashServer
 				return hasher.ComputeHash(data);
 		}
 
-		private const int port = 20000;
+		private static int port = 20000;
 		private static readonly byte[] Key = Encoding.UTF8.GetBytes("Контур.Шпора");
 		private static readonly ILog log = LogManager.GetLogger(typeof(Program));
 	}
