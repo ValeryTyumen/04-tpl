@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Text;
@@ -45,26 +46,49 @@ namespace ProxyServer
 			var query = context.Request.QueryString["query"];
 			var remoteEndPoint = context.Request.RemoteEndPoint;
 			Log.InfoFormat("{0}: received {1} from {2}", requestId, query, remoteEndPoint);
+			var encodings = context.Request.Headers.GetValues("Accept-Encoding");
+			var deflate = encodings != null && encodings.Contains("deflate");
 			context.Request.InputStream.Close();
-			string hashServer;
-			do
+			bool gotResponse = false;
+			Queue<string> serverQueue;
+			lock(Random)
+				serverQueue = new Queue<string>(_hashServers.OrderBy(z => Random.Next()));
+			while (serverQueue.Count != 0)
 			{
-				hashServer = _hashServers[Random.Next(_hashServers.Length - 1)];
-			} while (! (await GotResponseFromServer(query, hashServer, context.Response, requestId, remoteEndPoint)));
+				var hashServer = serverQueue.Dequeue();
+				if (await GotResponseFromServer(query, hashServer, context.Response, requestId, remoteEndPoint, deflate))
+				{
+					gotResponse = true;
+					break;
+				}
+			}
+			if (! gotResponse)
+			{
+				context.Response.StatusCode = 500;
+				context.Response.Close();
+			}
 		}
 
 		private static async Task<bool> GotResponseFromServer(string query, string server,
-			HttpListenerResponse responseToClient, Guid requestId, IPEndPoint client)
+			HttpListenerResponse responseToClient, Guid requestId, IPEndPoint client, bool deflate)
 		{
 			var requestUrl = String.Format("http://{0}/method?query={1}", server, query);
-			var requestToServer = WebRequest.Create(requestUrl);
-			requestToServer.Timeout = Timeout;
+			var requestToServer = CreateRequest(requestUrl);
 			HttpWebResponse responseFromServer;
+			var timeoutCheck = Task.Run(async () =>
+				{ await Task.Delay(Timeout); return (WebResponse)null; });
+			var responseGet = requestToServer.GetResponseAsync();
 			try
 			{
-				responseFromServer = (HttpWebResponse)(await requestToServer.GetResponseAsync());
+				var task = await Task.WhenAny(new [] { timeoutCheck, responseGet });
+				if (task.Result == null)
+				{
+					Log.InfoFormat("{0}: {1} timeout", requestId, server);
+					return false;
+				}
+				responseFromServer = (HttpWebResponse)task.Result;
 			}
-			catch (WebException)
+			catch (Exception)
 			{
 				Log.InfoFormat("{0}: connection error with {1}", requestId, server);
 				return false;
@@ -77,10 +101,28 @@ namespace ProxyServer
 			var reader = new StreamReader(responseFromServer.GetResponseStream());
 			var hash = reader.ReadToEnd();
 			var encryptedBytes = Encoding.UTF8.GetBytes(hash);
-			await responseToClient.OutputStream.WriteAsync(encryptedBytes, 0, encryptedBytes.Length);
+			var stream = responseToClient.OutputStream;
+			if (deflate)
+			{
+				responseToClient.Headers.Set("Content-Encoding", "deflate");
+				stream = new DeflateStream(stream, CompressionLevel.Optimal);
+			}
+			await stream.WriteAsync(encryptedBytes, 0, encryptedBytes.Length);
+			stream.Close();
 			responseToClient.OutputStream.Close();
-			Log.InfoFormat("{0}: {1} sent back to {2}", requestId, hash, client);
+			Log.InfoFormat("{0}: {1} sent back to {2} from server {3}", requestId, hash, client, server);
 			return true;
+		}
+
+		private static HttpWebRequest CreateRequest(string uriStr, int timeout = 30 * 1000)
+		{
+			var request = WebRequest.CreateHttp(uriStr);
+			request.Timeout = timeout;
+			request.Proxy = null;
+			request.KeepAlive = true;
+			request.ServicePoint.UseNagleAlgorithm = false;
+			request.ServicePoint.ConnectionLimit = 10000;
+			return request;
 		}
 
 		private const int Port = 31337;
@@ -88,6 +130,6 @@ namespace ProxyServer
 		private static string[] _hashServers;
 		private const string ServerInfoFile = "HashServers.txt";
 		private static readonly Random Random = new Random();
-		private const int Timeout = 3000;
+		private static readonly int Timeout = 3000;
 	}
 }
